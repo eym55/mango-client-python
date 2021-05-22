@@ -10,7 +10,7 @@ from pyserum.market import Market
 from solana.account import Account
 from solana.publickey import PublicKey
 
-from BaseModel import BasketToken, Group, MarketMetadata, OpenOrders, Token, TokenAccount
+from baseCli import BasketToken, Group, MarketMetadata, OpenOrders, Token, TokenAccount
 from Context import Context
 from Retrier import retry_context
 from Wallet import Wallet

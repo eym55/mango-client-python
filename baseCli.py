@@ -6,7 +6,7 @@ import time
 import typing
 import aysncio
 
-import Layouts as layouts
+import Layout as layouts
 
 from decimal import Decimal
 from pyserum.market import Market
