@@ -6,4 +6,4 @@ todo: \
    clean up classes -> fix redundancies  \ 
    fix margin account -> most of those should be moved to group  \
    wrap methods as libary
-"
+
