@@ -4,8 +4,6 @@ import enum
 import logging
 import time
 import typing
-
-import aysncio
 import Layout as layouts
 
 from decimal import Decimal
@@ -18,10 +16,9 @@ from solana.rpc.types import MemcmpOpts, TokenAccountOpts, RPCMethod, RPCRespons
 from spl.token.client import Token as SplToken
 from spl.token.constants import TOKEN_PROGRAM_ID
 
-from Constants import NUM_MARKETS, NUM_TOKENS, SOL_DECIMALS, SYSTEM_PROGRAM_ADDRESS, MAX_RATE,OPTIMAL_RATE,OPTIMAL_UTIL
+from Constants import NUM_MARKETS, NUM_TOKENS, SOL_DECIMALS, SYSTEM_PROGRAM_ADDRESS
 from Context import Context
 from Decoder import decode_binary, encode_binary, encode_key
-
 
 class Version(enum.Enum):
     UNSPECIFIED = 0
@@ -68,30 +65,27 @@ class AccountInfo:
 
     def __str__(self) -> str:
         return f"""« AccountInfo [{self.address}]:
-            Owner: {self.owner}
-            Executable: {self.executable}
-            Lamports: {self.lamports}
-            Rent Epoch: {self.rent_epoch}
-            »"""
+    Owner: {self.owner}
+    Executable: {self.executable}
+    Lamports: {self.lamports}
+    Rent Epoch: {self.rent_epoch}
+»"""
 
     def __repr__(self) -> str:
         return f"{self}"
 
     @staticmethod
     async def load(context: Context, address: PublicKey) -> typing.Optional["AccountInfo"]:
-
         response: RPCResponse = context.client.get_account_info(address)
         result = context.unwrap_or_raise_exception(response)
         if result["value"] is None:
             return None
         return AccountInfo._from_response_values(result["value"], address)
 
-
-
     @staticmethod
     async def load_multiple(context: Context, addresses: typing.List[PublicKey]) -> typing.List["AccountInfo"]:
         address_strings = list(map(PublicKey.__str__, addresses))
-        response = await context.client._provider.make_request(RPCMethod("getMultipleAccounts"), address_strings)
+        response = context.client._provider.make_request(RPCMethod("getMultipleAccounts"), address_strings)
         response_value_list = zip(response["result"]["value"], addresses)
         return list(map(lambda pair: AccountInfo._from_response_values(pair[0], pair[1]), response_value_list))
 
@@ -305,8 +299,8 @@ class Aggregator(AddressableAccount):
         return Aggregator.from_layout(layout, account_info, name)
 
     @staticmethod
-    def load(context: Context, account_address: PublicKey):
-        account_info = AccountInfo.load(context, account_address)
+    async def load(context: Context, account_address: PublicKey):
+        account_info = await AccountInfo.load(context, account_address)
         if account_info is None:
             raise Exception(f"Aggregator account not found at address '{account_address}'")
         return Aggregator.parse(context, account_info)
@@ -467,7 +461,7 @@ class TokenValue:
 
     @staticmethod
     def fetch_total_value(context: Context, account_public_key: PublicKey, token: Token) -> "TokenValue":
-        value = TokenValue.fetch_total_value_or_none(context, account_public_key, token)
+        value = await TokenValue.fetch_total_value_or_none(context, account_public_key, token)
         if value is None:
             return TokenValue(token, Decimal(0))
         return value
@@ -657,38 +651,11 @@ class Group(AddressableAccount):
         return Group.from_layout(layout, context, account_info)
 
     @staticmethod
-    def load(context: Context):
+    async def load(context: Context):
         account_info = AccountInfo.load(context, context.group_id)
         if account_info is None:
             raise Exception(f"Group account not found at address '{context.group_id}'")
         return Group.parse(context, account_info)
-    
-    #TODO Test this method, implement get_ui_total_borrow,get_ui_total_deposit
-    def get_deposit_rate(self,token_index: int):
-        borrow_rate = self.get_borrow_rate(token_index)
-        total_borrows = self.get_ui_total_borrow(token_index)
-        total_deposits = self.get_ui_total_deposit(token_index)
-        
-        if total_deposits == 0 and total_borrows == 0: return 0
-        elif total_deposits == 0: return MAX_RATE
-        utilization = total_borrows / total_deposits
-        return utilization * borrow_rate
-    
-    #TODO Test this method, implement get_ui_total_borrow, get_ui_total_deposit
-    def get_borrow_rate(self,token_index: int):
-        total_borrows = self.get_ui_total_borrow(token_index)
-        total_deposits = self.get_ui_total_deposit(token_index)
-        
-        if total_deposits == 0 and total_borrows == 0: return 0
-        if total_deposits <= total_borrows : return MAX_RATE
-        utilization = total_borrows / total_deposits
-        if utilization > OPTIMAL_UTIL:
-            extra_util = utilization - OPTIMAL_UTIL
-            slope = (MAX_RATE - OPTIMAL_RATE) / (1 - OPTIMAL_UTIL)
-            return OPTIMAL_RATE + slope * extra_util
-        else:
-            slope = OPTIMAL_RATE / OPTIMAL_UTIL
-            return slope * utilization
 
     def get_token_index(self, token: Token) -> int:
         for index, existing in enumerate(self.basket_tokens):
@@ -706,7 +673,7 @@ class Group(AddressableAccount):
         #
         # This seems to halve the time this function takes.
         oracle_addresses = list([market.oracle for market in self.markets])
-        oracle_account_infos = AccountInfo.load_multiple(self.context, oracle_addresses)
+        oracle_account_infos = await AccountInfo.load_multiple(self.context, oracle_addresses)
         oracles = map(lambda oracle_account_info: Aggregator.parse(self.context, oracle_account_info),
                       oracle_account_infos)
         prices = list(map(lambda oracle: oracle.price, oracles)) + [Decimal(1)]
@@ -737,7 +704,6 @@ class Group(AddressableAccount):
     def getUiTotalDeposit(self, tokenIndex: int) -> int:
         return Group.ui_to_native(self.totalDeposits[tokenIndex] * self.indexes[tokenIndex].deposit, self.mint_decimals[tokenIndex])
 
-
     def getUiTotalBorrow(self, tokenIndex: int) -> int:
         return Group.native_to_ui(self.totalBorrows[tokenIndex] * self.indexes[tokenIndex].borrow, self.mint_decimals[tokenIndex])
 
@@ -747,8 +713,6 @@ class Group(AddressableAccount):
         total_borrows = "\n        ".join(map(str, self.total_borrows))
         borrow_limits = "\n        ".join(map(str, self.borrow_limits))
         return f"""
-
-
 « Group [{self.version}] {self.address}:
     Flags: {self.account_flags}
     Tokens:
@@ -801,7 +765,7 @@ class TokenAccount(AddressableAccount):
         return all_accounts
 
     @staticmethod
-    def fetch_largest_for_owner_and_token(context: Context, owner_public_key: PublicKey, token: Token) -> typing.Optional["TokenAccount"]:
+    async def fetch_largest_for_owner_and_token(context: Context, owner_public_key: PublicKey, token: Token) -> typing.Optional["TokenAccount"]:
         all_accounts = TokenAccount.fetch_all_for_owner_and_token(context, owner_public_key, token)
 
         largest_account: typing.Optional[TokenAccount] = None
@@ -812,7 +776,7 @@ class TokenAccount(AddressableAccount):
         return largest_account
 
     @staticmethod
-    def fetch_or_create_largest_for_owner_and_token(context: Context, account: Account, token: Token) -> "TokenAccount":
+    async def fetch_or_create_largest_for_owner_and_token(context: Context, account: Account, token: Token) -> "TokenAccount":
         all_accounts = TokenAccount.fetch_all_for_owner_and_token(context, account.public_key(), token)
 
         largest_account: typing.Optional[TokenAccount] = None
@@ -919,7 +883,7 @@ class OpenOrders(AddressableAccount):
         return account_infos_by_address
 
     @staticmethod
-    def load(context: Context, address: PublicKey, base_decimals: Decimal, quote_decimals: Decimal) -> "OpenOrders":
+    async def load(context: Context, address: PublicKey, base_decimals: Decimal, quote_decimals: Decimal) -> "OpenOrders":
         open_orders_account = AccountInfo.load(context, address)
         if open_orders_account is None:
             raise Exception(f"OpenOrders account not found at address '{address}'")
@@ -1039,8 +1003,8 @@ class MarginAccount(AddressableAccount):
         return MarginAccount.from_layout(layout, account_info)
 
     @staticmethod
-    def load(context: Context, margin_account_address: PublicKey, group: typing.Optional[Group] = None) -> "MarginAccount":
-        account_info = AccountInfo.load(context, margin_account_address)
+    async def load(context: Context, margin_account_address: PublicKey, group: typing.Optional[Group] = None) -> "MarginAccount":
+        account_info = await AccountInfo.load(context, margin_account_address)
         if account_info is None:
             raise Exception(f"MarginAccount account not found at address '{margin_account_address}'")
         margin_account = MarginAccount.parse(account_info)
@@ -1050,7 +1014,7 @@ class MarginAccount(AddressableAccount):
         return margin_account
 
     @staticmethod
-    def load_all_for_group(context: Context, program_id: PublicKey, group: Group) -> typing.List["MarginAccount"]:
+    async def load_all_for_group(context: Context, program_id: PublicKey, group: Group) -> typing.List["MarginAccount"]:
         filters = [
             MemcmpOpts(
                 offset=layouts.MANGO_ACCOUNT_FLAGS.sizeof(),  # mango_group is just after the MangoAccountFlags, which is the first entry
@@ -1066,9 +1030,10 @@ class MarginAccount(AddressableAccount):
             margin_accounts += [margin_account]
         return margin_accounts
 
+
     @staticmethod
-    def load_all_for_group_with_open_orders(context: Context, program_id: PublicKey, group: Group) -> typing.List["MarginAccount"]:
-        margin_accounts = MarginAccount.load_all_for_group(context, context.program_id, group)
+    async def load_all_for_group_with_open_orders(context: Context, program_id: PublicKey, group: Group) -> typing.List["MarginAccount"]:
+        margin_accounts = await MarginAccount.load_all_for_group(context, context.program_id, group)
         open_orders = OpenOrders.load_raw_open_orders_account_infos(context, group)
         for margin_account in margin_accounts:
             margin_account.install_open_orders_accounts(group, open_orders)
@@ -1076,7 +1041,7 @@ class MarginAccount(AddressableAccount):
         return margin_accounts
 
     @staticmethod
-    def load_all_for_owner(context: Context, owner: PublicKey, group: typing.Optional[Group] = None) -> typing.List["MarginAccount"]:
+    async def load_all_for_owner(context: Context, owner: PublicKey, group: typing.Optional[Group] = None) -> typing.List["MarginAccount"]:
         if group is None:
             group = Group.load(context)
 
@@ -1104,16 +1069,16 @@ class MarginAccount(AddressableAccount):
         return margin_accounts
 
     @classmethod
-    def load_all_ripe(cls, context: Context) -> typing.List["MarginAccount"]:
+    async def load_all_ripe(cls, context: Context) -> typing.List["MarginAccount"]:
         logger: logging.Logger = logging.getLogger(cls.__name__)
 
         started_at = time.time()
 
         group = Group.load(context)
-        margin_accounts = MarginAccount.load_all_for_group_with_open_orders(context, context.program_id, group)
+        margin_accounts = await MarginAccount.load_all_for_group_with_open_orders(context, context.program_id, group)
         logger.info(f"Fetched {len(margin_accounts)} margin accounts to process.")
 
-        prices = group.get_prices()
+        prices = group.fetch_token_prices()
         nonzero: typing.List[MarginAccountMetadata] = []
         for margin_account in margin_accounts:
             balance_sheet = margin_account.get_balance_sheet_totals(group, prices)
@@ -1134,7 +1099,7 @@ class MarginAccount(AddressableAccount):
         for index, oo in enumerate(self.open_orders):
             key = oo
             if key != SYSTEM_PROGRAM_ADDRESS:
-                self.open_orders_accounts[index] = OpenOrders.load(context, key, group.basket_tokens[index].token.decimals, group.shared_quote_token.token.decimals)
+                self.open_orders_accounts[index] = await OpenOrders.load(context, key, group.basket_tokens[index].token.decimals, group.shared_quote_token.token.decimals)
 
     def install_open_orders_accounts(self, group: Group, all_open_orders_by_address: typing.Dict[str, AccountInfo]) -> None:
         for index, oo in enumerate(self.open_orders):
@@ -1265,12 +1230,12 @@ class LiquidationEvent:
         changes = TokenValue.changes(self.balances_before, self.balances_after)
         changes_text = "\n        ".join([f"{change.value:>15,.8f} {change.token.name}" for change in changes])
         return f"""« 🥭 Liqudation Event 💧 at {self.timestamp}
-            📇 Signature: {self.signature}
-            👛 Wallet: {self.wallet_address}
-            💳 Margin Account: {self.margin_account_address}
-            💸 Changes:
-                {changes_text}
-            »"""
+    📇 Signature: {self.signature}
+    👛 Wallet: {self.wallet_address}
+    💳 Margin Account: {self.margin_account_address}
+    💸 Changes:
+        {changes_text}
+»"""
 
     def __repr__(self) -> str:
         return f"{self}"
@@ -1338,7 +1303,7 @@ if __name__ == "__main__":
     single_account_info = AccountInfo.load(default_context, default_context.dex_program_id)
     print("DEX account info", single_account_info)
 
-    multiple_account_info = AccountInfo.load_multiple(default_context, [default_context.program_id, default_context.dex_program_id])
+    multiple_account_info = await AccountInfo.load_multiple(default_context, [default_context.program_id, default_context.dex_program_id])
     print("Mango program and DEX account info", multiple_account_info)
 
     balances_before = [
