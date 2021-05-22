@@ -4,6 +4,7 @@ import enum
 import logging
 import time
 import typing
+import aysncio
 
 import Layouts as layouts
 
@@ -17,9 +18,10 @@ from solana.rpc.types import MemcmpOpts, TokenAccountOpts, RPCMethod, RPCRespons
 from spl.token.client import Token as SplToken
 from spl.token.constants import TOKEN_PROGRAM_ID
 
-from Constants import NUM_MARKETS, NUM_TOKENS, SOL_DECIMALS, SYSTEM_PROGRAM_ADDRESS
+from Constants import NUM_MARKETS, NUM_TOKENS, SOL_DECIMALS, SYSTEM_PROGRAM_ADDRESS, MAX_RATE,OPTIMAL_RATE,OPTIMAL_UTIL
 from Context import Context
 from Decoder import decode_binary, encode_binary, encode_key
+
 
 class Version(enum.Enum):
     UNSPECIFIED = 0
@@ -66,26 +68,27 @@ class AccountInfo:
 
     def __str__(self) -> str:
         return f"""« AccountInfo [{self.address}]:
-    Owner: {self.owner}
-    Executable: {self.executable}
-    Lamports: {self.lamports}
-    Rent Epoch: {self.rent_epoch}
-»"""
+            Owner: {self.owner}
+            Executable: {self.executable}
+            Lamports: {self.lamports}
+            Rent Epoch: {self.rent_epoch}
+            »"""
 
     def __repr__(self) -> str:
         return f"{self}"
 
     @staticmethod
-    def load(context: Context, address: PublicKey) -> typing.Optional["AccountInfo"]:
+    async def load(context: Context, address: PublicKey) -> typing.Optional["AccountInfo"]:
         response: RPCResponse = context.client.get_account_info(address)
         result = context.unwrap_or_raise_exception(response)
         if result["value"] is None:
             return None
-
         return AccountInfo._from_response_values(result["value"], address)
 
+
+
     @staticmethod
-    def load_multiple(context: Context, addresses: typing.List[PublicKey]) -> typing.List["AccountInfo"]:
+    async def load_multiple(context: Context, addresses: typing.List[PublicKey]) -> typing.List["AccountInfo"]:
         address_strings = list(map(PublicKey.__str__, addresses))
         response = context.client._provider.make_request(RPCMethod("getMultipleAccounts"), address_strings)
         response_value_list = zip(response["result"]["value"], addresses)
@@ -656,14 +659,41 @@ class Group(AddressableAccount):
         if account_info is None:
             raise Exception(f"Group account not found at address '{context.group_id}'")
         return Group.parse(context, account_info)
+    
+    #TODO Test this method, implement get_ui_total_borrow,get_ui_total_deposit
+    def get_deposit_rate(self,token_index: int):
+        borrow_rate = self.get_borrow_rate(token_index)
+        total_borrows = self.get_ui_total_borrow(token_index)
+        total_deposits = self.get_ui_total_deposit(token_index)
+        
+        if total_deposits == 0 and total_borrows == 0: return 0
+        elif total_deposits == 0: return MAX_RATE
+        utilization = total_borrows / total_deposits
+        return utilization * borrow_rate
+    
+    #TODO Test this method, implement get_ui_total_borrow, get_ui_total_deposit
+    def get_borrow_rate(self,token_index: int):
+        total_borrows = self.get_ui_total_borrow(token_index)
+        total_deposits = self.get_ui_total_deposit(token_index)
+        
+        if total_deposits == 0 and total_borrows == 0: return 0
+        if total_deposits <= total_borrows : return MAX_RATE
+        utilization = total_borrows / total_deposits
+        if utilization > OPTIMAL_UTIL:
+            extra_util = utilization - OPTIMAL_UTIL
+            slope = (MAX_RATE - OPTIMAL_RATE) / (1 - OPTIMAL_UTIL)
+            return OPTIMAL_RATE + slope * extra_util
+        else:
+            slope = OPTIMAL_RATE / OPTIMAL_UTIL
+            return slope * utilization
 
-    def price_index_of_token(self, token: Token) -> int:
+    def get_token_index(self, token: Token) -> int:
         for index, existing in enumerate(self.basket_tokens):
             if existing.token == token:
                 return index
         return -1
 
-    def fetch_token_prices(self) -> typing.List[TokenValue]:
+    def get_prices(self) -> typing.List[TokenValue]:
         started_at = time.time()
 
         # Note: we can just load the oracle data in a simpler way, with:
@@ -700,6 +730,8 @@ class Group(AddressableAccount):
         total_borrows = "\n        ".join(map(str, self.total_borrows))
         borrow_limits = "\n        ".join(map(str, self.borrow_limits))
         return f"""
+
+
 « Group [{self.version}] {self.address}:
     Flags: {self.account_flags}
     Tokens:
@@ -1064,7 +1096,7 @@ class MarginAccount(AddressableAccount):
         margin_accounts = MarginAccount.load_all_for_group_with_open_orders(context, context.program_id, group)
         logger.info(f"Fetched {len(margin_accounts)} margin accounts to process.")
 
-        prices = group.fetch_token_prices()
+        prices = group.get_prices()
         nonzero: typing.List[MarginAccountMetadata] = []
         for margin_account in margin_accounts:
             balance_sheet = margin_account.get_balance_sheet_totals(group, prices)
@@ -1216,12 +1248,12 @@ class LiquidationEvent:
         changes = TokenValue.changes(self.balances_before, self.balances_after)
         changes_text = "\n        ".join([f"{change.value:>15,.8f} {change.token.name}" for change in changes])
         return f"""« 🥭 Liqudation Event 💧 at {self.timestamp}
-    📇 Signature: {self.signature}
-    👛 Wallet: {self.wallet_address}
-    💳 Margin Account: {self.margin_account_address}
-    💸 Changes:
-        {changes_text}
-»"""
+            📇 Signature: {self.signature}
+            👛 Wallet: {self.wallet_address}
+            💳 Margin Account: {self.margin_account_address}
+            💸 Changes:
+                {changes_text}
+            »"""
 
     def __repr__(self) -> str:
         return f"{self}"
