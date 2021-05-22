@@ -4,8 +4,8 @@ import enum
 import logging
 import time
 import typing
-import aysncio
 
+import aysncio
 import Layout as layouts
 
 from decimal import Decimal
@@ -79,6 +79,7 @@ class AccountInfo:
 
     @staticmethod
     async def load(context: Context, address: PublicKey) -> typing.Optional["AccountInfo"]:
+
         response: RPCResponse = context.client.get_account_info(address)
         result = context.unwrap_or_raise_exception(response)
         if result["value"] is None:
@@ -90,7 +91,7 @@ class AccountInfo:
     @staticmethod
     async def load_multiple(context: Context, addresses: typing.List[PublicKey]) -> typing.List["AccountInfo"]:
         address_strings = list(map(PublicKey.__str__, addresses))
-        response = context.client._provider.make_request(RPCMethod("getMultipleAccounts"), address_strings)
+        response = await context.client._provider.make_request(RPCMethod("getMultipleAccounts"), address_strings)
         response_value_list = zip(response["result"]["value"], addresses)
         return list(map(lambda pair: AccountInfo._from_response_values(pair[0], pair[1]), response_value_list))
 
@@ -446,17 +447,17 @@ class TokenValue:
         self.value = value
 
     @staticmethod
-    def fetch_total_value_or_none(context: Context, account_public_key: PublicKey, token: Token) -> typing.Optional["TokenValue"]:
+    async def fetch_total_value_or_none(context: Context, account_public_key: PublicKey, token: Token) -> typing.Optional["TokenValue"]:
         opts = TokenAccountOpts(mint=token.mint)
 
-        token_accounts_response = context.client.get_token_accounts_by_owner(account_public_key, opts, commitment=context.commitment)
+        token_accounts_response = await context.client.get_token_accounts_by_owner(account_public_key, opts, commitment=context.commitment)
         token_accounts = token_accounts_response["result"]["value"]
         if len(token_accounts) == 0:
             return None
 
         total_value = Decimal(0)
         for token_account in token_accounts:
-            result = context.client.get_token_account_balance(token_account["pubkey"], commitment=context.commitment)
+            result = await context.client.get_token_account_balance(token_account["pubkey"], commitment=context.commitment)
             value = Decimal(result["result"]["value"]["amount"])
             decimal_places = result["result"]["value"]["decimals"]
             divisor = Decimal(10 ** decimal_places)
@@ -564,9 +565,9 @@ class MarketMetadata:
         self.decimals: Decimal = decimals
         self._market = None
 
-    def fetch_market(self, context: Context) -> Market:
+    async def fetch_market(self, context: Context) -> Market:
         if self._market is None:
-            self._market = Market.load(context.client, self.spot)
+            self._market = await Market.load(context.client, self.spot)
 
         return self._market
 
@@ -604,6 +605,8 @@ class Group(AddressableAccount):
         self.srm_vault: PublicKey = srm_vault
         self.admin: PublicKey = admin
         self.borrow_limits: typing.List[Decimal] = borrow_limits
+        self.mint_decimals: typing.List[int] = [token.mint for token in basket_tokens]
+
 
     @property
     def shared_quote_token(self) -> BasketToken:
@@ -725,6 +728,20 @@ class Group(AddressableAccount):
             balances += [balance]
         return balances
 
+    def native_to_ui(self, amount, decimals) -> int:
+        return amount / (10 ** decimals)
+
+    def ui_to_native(self, amount, decimals) -> int:
+        return amount * (10 ** decimals)
+
+    def getUiTotalDeposit(self, tokenIndex: int) -> int:
+        return Group.ui_to_native(self.totalDeposits[tokenIndex] * self.indexes[tokenIndex].deposit, self.mint_decimals[tokenIndex])
+
+
+    def getUiTotalBorrow(self, tokenIndex: int) -> int:
+        return Group.native_to_ui(self.totalBorrows[tokenIndex] * self.indexes[tokenIndex].borrow, self.mint_decimals[tokenIndex])
+
+
     def __str__(self) -> str:
         total_deposits = "\n        ".join(map(str, self.total_deposits))
         total_borrows = "\n        ".join(map(str, self.total_borrows))
@@ -764,7 +781,7 @@ class TokenAccount(AddressableAccount):
 
     @staticmethod
     def create(context: Context, account: Account, token: Token):
-        spl_token = SplToken(context.client, token.mint, TOKEN_PROGRAM_ID, account)
+        spl_token = await SplToken(context.client, token.mint, TOKEN_PROGRAM_ID, account)
         owner = account.public_key()
         new_account_address = spl_token.create_account(owner)
         return TokenAccount.load(context, new_account_address)
@@ -773,7 +790,7 @@ class TokenAccount(AddressableAccount):
     def fetch_all_for_owner_and_token(context: Context, owner_public_key: PublicKey, token: Token) -> typing.List["TokenAccount"]:
         opts = TokenAccountOpts(mint=token.mint)
 
-        token_accounts_response = context.client.get_token_accounts_by_owner(owner_public_key, opts, commitment=context.commitment)
+        token_accounts_response = await context.client.get_token_accounts_by_owner(owner_public_key, opts, commitment=context.commitment)
 
         all_accounts: typing.List[TokenAccount] = []
         for token_account_response in token_accounts_response["result"]["value"]:
@@ -888,7 +905,7 @@ class OpenOrders(AddressableAccount):
         return OpenOrders.from_layout(layout, account_info, base_decimals, quote_decimals)
 
     @staticmethod
-    def load_raw_open_orders_account_infos(context: Context, group: Group) -> typing.Dict[str, AccountInfo]:
+    async def load_raw_open_orders_account_infos(context: Context, group: Group) -> typing.Dict[str, AccountInfo]:
         filters = [
             MemcmpOpts(
                 offset=layouts.SERUM_ACCOUNT_FLAGS.sizeof() + 37,
@@ -896,7 +913,7 @@ class OpenOrders(AddressableAccount):
             )
         ]
 
-        response = context.client.get_program_accounts(group.dex_program_id, data_size=layouts.OPEN_ORDERS.sizeof(), memcmp_opts=filters, commitment=Single, encoding="base64")
+        response = await context.client.get_program_accounts(group.dex_program_id, data_size=layouts.OPEN_ORDERS.sizeof(), memcmp_opts=filters, commitment=Single, encoding="base64")
         account_infos = list(map(lambda pair: AccountInfo._from_response_values(pair[0], pair[1]), [(result["account"], PublicKey(result["pubkey"])) for result in response["result"]]))
         account_infos_by_address = {key: value for key, value in [(str(account_info.address), account_info) for account_info in account_infos]}
         return account_infos_by_address
@@ -909,7 +926,7 @@ class OpenOrders(AddressableAccount):
         return OpenOrders.parse(open_orders_account, base_decimals, quote_decimals)
 
     @staticmethod
-    def load_for_market_and_owner(context: Context, market: PublicKey, owner: PublicKey, program_id: PublicKey, base_decimals: Decimal, quote_decimals: Decimal):
+    async def load_for_market_and_owner(context: Context, market: PublicKey, owner: PublicKey, program_id: PublicKey, base_decimals: Decimal, quote_decimals: Decimal):
         filters = [
             MemcmpOpts(
                 offset=layouts.SERUM_ACCOUNT_FLAGS.sizeof() + 5,
@@ -921,7 +938,7 @@ class OpenOrders(AddressableAccount):
             )
         ]
 
-        response = context.client.get_program_accounts(context.dex_program_id, data_size=layouts.OPEN_ORDERS.sizeof(), memcmp_opts=filters, commitment=Single, encoding="base64")
+        response = await context.client.get_program_accounts(context.dex_program_id, data_size=layouts.OPEN_ORDERS.sizeof(), memcmp_opts=filters, commitment=Single, encoding="base64")
         accounts = list(map(lambda pair: AccountInfo._from_response_values(pair[0], pair[1]), [(result["account"], PublicKey(result["pubkey"])) for result in response["result"]]))
         return list(map(lambda acc: OpenOrders.parse(acc, base_decimals, quote_decimals), accounts))
 
