@@ -5,7 +5,7 @@ import time
 import typing
 
 from AccountLiquidator import AccountLiquidator
-from BaseModel import Group, LiquidationEvent, MarginAccount, MarginAccountMetadata, TokenValue
+from baseCli import Group, LiquidationEvent, MarginAccount, MarginAccountMetadata, TokenValue
 from Context import Context
 from Observables import EventSource
 from WalletBalancer import NullWalletBalancer, WalletBalancer

@@ -5,7 +5,7 @@ import logging
 import time
 import typing
 
-import Layouts as layouts
+import Layout as layouts
 
 from decimal import Decimal
 from pyserum.market import Market
